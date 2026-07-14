@@ -17,62 +17,54 @@ http.createServer((req, res) => {
 });
 
 
-// Users already checked
-const processedUsers = new Set();
+// Stores existing members so they are ignored
+const knownMembers = new Set();
+
+let initialized = false;
 
 
-// Find Member role and get users
-async function getMembers(cursor = "") {
 
-    try {
+// Get Member role ID
+async function getMemberRoleId() {
 
-        // Get group roles
-        const rolesResponse = await axios.get(
-            `https://groups.roblox.com/v1/groups/${GROUP_ID}/roles`
-        );
+    const response = await axios.get(
+        `https://groups.roblox.com/v1/groups/${GROUP_ID}/roles`
+    );
 
-        const roles = rolesResponse.data.roles;
+    const memberRole = response.data.roles.find(
+        role => role.rank === 1
+    );
 
-
-        // Find default Member role
-        const memberRole = roles.find(
-            role => role.rank === 1
-        );
-
-
-        if (!memberRole) {
-            console.log("❌ Could not find Member role");
-            return null;
-        }
-
-
-        // Get users in Member role
-        const usersResponse = await axios.get(
-            `https://groups.roblox.com/v1/groups/${GROUP_ID}/roles/${memberRole.id}/users`,
-            {
-                params: {
-                    limit: 100,
-                    cursor: cursor
-                }
-            }
-        );
-
-
-        return usersResponse.data;
-
-
-    } catch (error) {
-
-        console.log("❌ Failed getting members:");
-        console.log(error.response?.data || error.message);
-
-        return null;
+    if (!memberRole) {
+        throw new Error("Member role not found");
     }
+
+    return memberRole.id;
 }
 
 
 
-// Rank user
+// Get all users in Member role
+async function getMembers(cursor = "") {
+
+    const memberRoleId = await getMemberRoleId();
+
+    const response = await axios.get(
+        `https://groups.roblox.com/v1/groups/${GROUP_ID}/roles/${memberRoleId}/users`,
+        {
+            params: {
+                limit: 100,
+                cursor: cursor
+            }
+        }
+    );
+
+    return response.data;
+}
+
+
+
+// Rank user with X-CSRF handling
 async function setRank(userId, username) {
 
     try {
@@ -91,25 +83,61 @@ async function setRank(userId, username) {
         );
 
 
-        console.log(`✅ Ranked ${username} (${userId})`);
+        console.log(`✅ Ranked ${username}`);
 
 
     } catch (error) {
 
-        console.log(`❌ Failed ranking ${username}:`);
-        console.log(error.response?.data || error.message);
 
+        // Handle X-CSRF error
+        if (
+            error.response &&
+            error.response.headers["x-csrf-token"]
+        ) {
+
+            const csrf =
+                error.response.headers["x-csrf-token"];
+
+
+            await axios.patch(
+                `https://groups.roblox.com/v1/groups/${GROUP_ID}/users/${userId}`,
+                {
+                    roleId: TARGET_ROLE_ID
+                },
+                {
+                    headers: {
+                        "x-api-key": API_KEY,
+                        "Content-Type": "application/json",
+                        "x-csrf-token": csrf
+                    }
+                }
+            );
+
+
+            console.log(`✅ Ranked ${username}`);
+
+        } else {
+
+            console.log(`❌ Failed ranking ${username}`);
+            console.log(
+                error.response?.data || error.message
+            );
+
+        }
     }
 }
 
 
 
-// Check members
+// Check for new members
 async function checkMembers() {
 
-    console.log("🔎 Checking new members...");
+    console.log("Checking members...");
 
     let cursor = "";
+
+
+    let currentMembers = [];
 
 
     while (true) {
@@ -117,19 +145,48 @@ async function checkMembers() {
         const data = await getMembers(cursor);
 
 
-        if (!data)
+        for (const user of data.data) {
+            currentMembers.push(user);
+        }
+
+
+        if (!data.nextPageCursor)
             break;
 
 
-
-        for (const user of data.data) {
-
-
-            if (processedUsers.has(user.userId))
-                continue;
+        cursor = data.nextPageCursor;
+    }
 
 
-            processedUsers.add(user.userId);
+
+    // First startup: save existing users
+    if (!initialized) {
+
+        for (const user of currentMembers) {
+            knownMembers.add(user.userId);
+        }
+
+        initialized = true;
+
+        console.log(
+            `Loaded ${knownMembers.size} existing members`
+        );
+
+        return;
+    }
+
+
+
+    // Only rank NEW members
+    for (const user of currentMembers) {
+
+
+        if (!knownMembers.has(user.userId)) {
+
+
+            console.log(
+                `New member detected: ${user.username}`
+            );
 
 
             await setRank(
@@ -138,31 +195,21 @@ async function checkMembers() {
             );
 
 
-            // Prevent API rate limits
-            await new Promise(resolve =>
-                setTimeout(resolve, 1500)
-            );
+            knownMembers.add(user.userId);
+
 
         }
-
-
-
-        if (!data.nextPageCursor)
-            break;
-
-
-        cursor = data.nextPageCursor;
 
     }
 
 
-    console.log("✅ Member check complete.");
+    console.log("Finished checking.");
 
 }
 
 
 
-// Start immediately
+// Start bot
 checkMembers();
 
 
