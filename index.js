@@ -17,40 +17,23 @@ http.createServer((req, res) => {
 });
 
 
-// Stores existing members so they are ignored
-const knownMembers = new Set();
-
-let initialized = false;
-
-
-
-// Get Member role ID
-async function getMemberRoleId() {
+// Get all group roles
+async function getRoles() {
 
     const response = await axios.get(
         `https://groups.roblox.com/v1/groups/${GROUP_ID}/roles`
     );
 
-    const memberRole = response.data.roles.find(
-        role => role.rank === 1
-    );
-
-    if (!memberRole) {
-        throw new Error("Member role not found");
-    }
-
-    return memberRole.id;
+    return response.data.roles;
 }
 
 
 
-// Get all users in Member role
-async function getMembers(cursor = "") {
-
-    const memberRoleId = await getMemberRoleId();
+// Get all members in a role
+async function getRoleUsers(roleId, cursor = "") {
 
     const response = await axios.get(
-        `https://groups.roblox.com/v1/groups/${GROUP_ID}/roles/${memberRoleId}/users`,
+        `https://groups.roblox.com/v1/groups/${GROUP_ID}/roles/${roleId}/users`,
         {
             params: {
                 limit: 100,
@@ -64,7 +47,7 @@ async function getMembers(cursor = "") {
 
 
 
-// Rank user with X-CSRF handling
+// Rank user
 async function setRank(userId, username) {
 
     try {
@@ -89,14 +72,10 @@ async function setRank(userId, username) {
     } catch (error) {
 
 
-        // Handle X-CSRF error
-        if (
-            error.response &&
-            error.response.headers["x-csrf-token"]
-        ) {
+        // X-CSRF handling
+        if (error.response?.headers["x-csrf-token"]) {
 
-            const csrf =
-                error.response.headers["x-csrf-token"];
+            const csrf = error.response.headers["x-csrf-token"];
 
 
             await axios.patch(
@@ -116,6 +95,7 @@ async function setRank(userId, username) {
 
             console.log(`✅ Ranked ${username}`);
 
+
         } else {
 
             console.log(`❌ Failed ranking ${username}`);
@@ -124,68 +104,51 @@ async function setRank(userId, username) {
             );
 
         }
+
     }
 }
 
 
 
-// Check for new members
+// Check members
 async function checkMembers() {
 
-    console.log("Checking members...");
-
-    let cursor = "";
+    console.log("Checking for unranked members...");
 
 
-    let currentMembers = [];
+    const roles = await getRoles();
 
 
-    while (true) {
-
-        const data = await getMembers(cursor);
-
-
-        for (const user of data.data) {
-            currentMembers.push(user);
-        }
+    // Find Member role
+    const memberRole = roles.find(
+        role => role.rank === 1
+    );
 
 
-        if (!data.nextPageCursor)
-            break;
-
-
-        cursor = data.nextPageCursor;
-    }
-
-
-
-    // First startup: save existing users
-    if (!initialized) {
-
-        for (const user of currentMembers) {
-            knownMembers.add(user.userId);
-        }
-
-        initialized = true;
-
-        console.log(
-            `Loaded ${knownMembers.size} existing members`
-        );
-
+    if (!memberRole) {
+        console.log("Member role not found");
         return;
     }
 
 
-
-    // Only rank NEW members
-    for (const user of currentMembers) {
+    let cursor = "";
 
 
-        if (!knownMembers.has(user.userId)) {
+    while (true) {
+
+
+        const data = await getRoleUsers(
+            memberRole.id,
+            cursor
+        );
+
+
+
+        for (const user of data.data) {
 
 
             console.log(
-                `New member detected: ${user.username}`
+                `Found Member: ${user.username}`
             );
 
 
@@ -195,10 +158,20 @@ async function checkMembers() {
             );
 
 
-            knownMembers.add(user.userId);
-
+            // Prevent rate limits
+            await new Promise(resolve =>
+                setTimeout(resolve, 1500)
+            );
 
         }
+
+
+
+        if (!data.nextPageCursor)
+            break;
+
+
+        cursor = data.nextPageCursor;
 
     }
 
@@ -209,9 +182,9 @@ async function checkMembers() {
 
 
 
-// Start bot
+// Start
 checkMembers();
 
 
-// Check every 30 seconds
+// Every 30 seconds
 setInterval(checkMembers, 30 * 1000);
