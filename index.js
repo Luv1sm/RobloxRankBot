@@ -15,21 +15,33 @@ http.createServer((req, res) => {
     console.log(`Server running on port ${PORT}`);
 });
 
+// Helper to format Axios errors clearly instead of printing native function/object dumps
+function parseAxiosError(error) {
+    if (error.response) {
+        return `API Error ${error.response.status}: ${JSON.stringify(error.response.data)}`;
+    }
+    return error.message;
+}
+
 // Get Member role ID
 async function getMemberRoleId() {
-    const response = await axios.get(
-        `https://groups.roblox.com/v1/groups/${GROUP_ID}/roles`
-    );
+    try {
+        const response = await axios.get(
+            `https://groups.roblox.com/v1/groups/${GROUP_ID}/roles`
+        );
 
-    const memberRole = response.data.roles.find(
-        role => role.rank === 1
-    );
+        const memberRole = response.data.roles.find(
+            role => role.rank === 1
+        );
 
-    if (!memberRole) {
-        throw new Error("Member role not found");
+        if (!memberRole) {
+            throw new Error("Member role not found");
+        }
+
+        return memberRole.id;
+    } catch (error) {
+        throw new Error(`Failed to fetch Member Role ID: ${parseAxiosError(error)}`);
     }
-
-    return memberRole.id;
 }
 
 // Get all users currently in the lowest Member role
@@ -56,17 +68,15 @@ async function getUserRankInGroup(userId) {
             `https://groups.roblox.com/v2/users/${userId}/groups/roles`
         );
         
-        // Find the group object inside the user's groups list
         const groupData = response.data.data.find(
             g => g.group.id === GROUP_ID
         );
         
-        // If they aren't even in the group, return 0
         if (!groupData) return 0;
         
         return groupData.role.rank;
     } catch (error) {
-        console.error(`Error checking roles for user ${userId}:`, error.message);
+        console.error(`❌ Error checking roles for user ${userId}:`, parseAxiosError(error));
         return null;
     }
 }
@@ -88,76 +98,73 @@ async function setRank(userId, username) {
         console.log(`✅ Ranked ${username}`);
 
     } catch (error) {
-        // Handle X-CSRF error
-        if (
-            error.response &&
-            error.response.headers["x-csrf-token"]
-        ) {
+        // Handle X-CSRF token validation
+        if (error.response && error.response.headers["x-csrf-token"]) {
             const csrf = error.response.headers["x-csrf-token"];
 
-            await axios.patch(
-                `https://groups.roblox.com/v1/groups/${GROUP_ID}/users/${userId}`,
-                { roleId: TARGET_ROLE_ID },
-                {
-                    headers: {
-                        "x-api-key": API_KEY,
-                        "Content-Type": "application/json",
-                        "x-csrf-token": csrf
+            try {
+                await axios.patch(
+                    `https://groups.roblox.com/v1/groups/${GROUP_ID}/users/${userId}`,
+                    { roleId: TARGET_ROLE_ID },
+                    {
+                        headers: {
+                            "x-api-key": API_KEY,
+                            "Content-Type": "application/json",
+                            "x-csrf-token": csrf
+                        }
                     }
-                }
-            );
-
-            console.log(`✅ Ranked ${username}`);
+                );
+                console.log(`✅ Ranked ${username} (with token)`);
+            } catch (retryError) {
+                console.log(`❌ Failed ranking ${username}:`, parseAxiosError(retryError));
+            }
         } else {
-            console.log(`❌ Failed ranking ${username}`);
-            console.log(error.response?.data || error.message);
+            console.log(`❌ Failed ranking ${username}:`, parseAxiosError(error));
         }
     }
 }
 
 // Check for members and rank them if they meet the criteria
 async function checkMembers() {
-    console.log("Checking members...");
     let cursor = "";
     let currentMembers = [];
 
-    // Pull users currently sitting in the base Member role
     try {
         while (true) {
             const data = await getMembers(cursor);
-
             for (const user of data.data) {
                 currentMembers.push(user);
             }
-
             if (!data.nextPageCursor) break;
             cursor = data.nextPageCursor;
         }
     } catch (err) {
-        console.error("Error fetching group members:", err.message);
+        console.error("❌ Error fetching group members:", parseAxiosError(err));
         return;
     }
 
+    let usersRankedCount = 0;
+
     // Evaluate each user individually
     for (const user of currentMembers) {
-        // Fetch their current absolute rank value
         const currentRank = await getUserRankInGroup(user.userId);
 
-        // Rank 1 is the default Roblox member tier. 
-        // If currentRank is null, the API check failed, so we skip to be safe.
+        // Only rank up users who are strictly rank level 1 ("Member")
         if (currentRank === 1) {
-            console.log(`User ${user.username} is only a Member. Ranking up...`);
             await setRank(user.userId, user.username);
-        } else if (currentRank !== null) {
-            console.log(`ℹ️ Skipped ${user.username} (Has a different role, Rank: ${currentRank})`);
+            usersRankedCount++;
         }
     }
 
-    console.log("Finished checking.");
+    // Single clear summary log block per interval cycle
+    if (usersRankedCount > 0) {
+        console.log(`📋 Cycle finished: Checked ${currentMembers.length} accounts, successfully updated ${usersRankedCount} users.`);
+    }
 }
 
 // Start bot
+console.log("Roblox Rank Bot Initialized.");
 checkMembers();
 
-// Check every 30 seconds
-setInterval(checkMembers, 30 * 1000);
+// Check every 60 seconds (1 minute)
+setInterval(checkMembers, 60 * 1000);
