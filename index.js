@@ -149,4 +149,4 @@ console.log("Roblox Rank Bot Initialized using Open Cloud APIs.");
 checkMembers();
 
 // Check every 60 seconds (1 minute)
-setInterval(checkMembers, 60 * 1000);
+setInterval(checkMembers, 30 * 1000);
