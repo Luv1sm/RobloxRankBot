@@ -5,6 +5,9 @@ const GROUP_ID = Number(process.env.GROUP_ID);
 const API_KEY = process.env.ROBLOX_API_KEY;
 const TARGET_ROLE_ID = Number(process.env.TARGET_RANK_ID);
 
+// Verified Base Member Role ID
+const BASE_MEMBER_ROLE_ID = 12884901889; 
+
 const PORT = process.env.PORT || 3000;
 
 // Render server
@@ -23,50 +26,13 @@ function parseAxiosError(error) {
     return error.message;
 }
 
-// Get Member role ID via Open Cloud (Finds the lowest valid group rank)
-async function getMemberRoleId() {
-    try {
-        const response = await axios.get(
-            `https://apis.roblox.com/cloud/v2/groups/${GROUP_ID}/roles`,
-            {
-                headers: {
-                    "x-api-key": API_KEY
-                }
-            }
-        );
-
-        const roles = response.data.groupRoles || response.data.data || [];
-        
-        // Filter out Rank 0 (Guests who aren't in the group)
-        const validGroupRoles = roles.filter(role => role.rank > 0);
-
-        if (validGroupRoles.length === 0) {
-            throw new Error("No valid group roles found");
-        }
-
-        // Sort by rank ascending to find the lowest tier role automatically
-        validGroupRoles.sort((a, b) => a.rank - b.rank);
-        const memberRole = validGroupRoles[0];
-
-        console.log(`ℹ️ Automatically identified your entry member role: "${memberRole.displayName}" (Rank ${memberRole.rank})`);
-
-        const roleIdPath = memberRole.path || memberRole.name;
-        const roleId = roleIdPath.split("/").pop();
-        return Number(roleId);
-    } catch (error) {
-        throw new Error(`Failed to fetch Member Role ID: ${parseAxiosError(error)}`);
-    }
-}
-
-// Get all users currently in the lowest Member role via Open Cloud memberships
+// Get all users currently in the group memberships
 async function getMembers(pageToken = "") {
     try {
         const response = await axios.get(
             `https://apis.roblox.com/cloud/v2/groups/${GROUP_ID}/memberships`,
             {
-                headers: {
-                    "x-api-key": API_KEY
-                },
+                headers: { "x-api-key": API_KEY },
                 params: {
                     maxPageSize: 100,
                     pageToken: pageToken
@@ -79,15 +45,13 @@ async function getMembers(pageToken = "") {
     }
 }
 
-// Check a specific user's current rank and get their Membership ID
+// Check a specific user's current rank via verified Open Cloud Request
 async function getUserMembershipAndRank(targetUserId) {
     try {
         const response = await axios.get(
             `https://apis.roblox.com/cloud/v2/groups/${GROUP_ID}/memberships`,
             {
-                headers: {
-                    "x-api-key": API_KEY
-                },
+                headers: { "x-api-key": API_KEY },
                 params: {
                     filter: `user == 'users/${targetUserId}'`
                 }
@@ -137,14 +101,6 @@ async function setRank(membershipId, username) {
 async function checkMembers() {
     let pageToken = "";
     let currentMembers = [];
-    let memberRoleId;
-
-    try {
-        memberRoleId = await getMemberRoleId();
-    } catch (err) {
-        console.error("❌ " + err.message);
-        return;
-    }
 
     try {
         while (true) {
@@ -154,7 +110,8 @@ async function checkMembers() {
             for (const membership of memberships) {
                 const roleId = Number(membership.role.split("/").pop());
                 
-                if (roleId === memberRoleId) {
+                // Only queue up users if they match your literal Member ID (12884901889)
+                if (roleId === BASE_MEMBER_ROLE_ID) {
                     const userId = membership.user.split("/").pop();
                     currentMembers.push({
                         userId: userId,
@@ -176,7 +133,7 @@ async function checkMembers() {
     for (const member of currentMembers) {
         const status = await getUserMembershipAndRank(member.userId);
 
-        if (status && status.roleId === memberRoleId) {
+        if (status && status.roleId === BASE_MEMBER_ROLE_ID) {
             await setRank(member.membershipId, member.userId);
             usersRankedCount++;
         }
