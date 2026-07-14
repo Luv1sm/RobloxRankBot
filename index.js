@@ -1,14 +1,16 @@
 const axios = require("axios");
 const http = require("http");
 
+require("dotenv").config();
+
 const GROUP_ID = process.env.GROUP_ID;
 const API_KEY = process.env.ROBLOX_API_KEY;
-const TARGET_RANK_ID = Number(process.env.TARGET_RANK_ID);
+const TARGET_ROLE_ID = Number(process.env.TARGET_RANK_ID);
 
 const PORT = process.env.PORT || 3000;
 
 
-// Render web server
+// Render Web Server
 http.createServer((req, res) => {
     res.write("Roblox Rank Bot Online");
     res.end();
@@ -17,30 +19,46 @@ http.createServer((req, res) => {
 });
 
 
-// Get all members with a specific rank
+// Prevent duplicate processing
+const processedUsers = new Set();
+
+
+// Get all users with Member rank
 async function getMembers(cursor = "") {
+
     try {
+
         const response = await axios.get(
-            `https://groups.roblox.com/v1/groups/${GROUP_ID}/roles/1/users?limit=100&cursor=${cursor}`
+            `https://groups.roblox.com/v1/groups/${GROUP_ID}/roles/1/users`,
+            {
+                params: {
+                    limit: 100,
+                    cursor: cursor
+                }
+            }
         );
 
         return response.data;
 
     } catch (error) {
-        console.log("Failed getting members:");
+
+        console.log("❌ Failed getting members:");
         console.log(error.response?.data || error.message);
+
         return null;
     }
 }
 
 
 // Rank user
-async function setRank(userId) {
+async function setRank(userId, username) {
+
     try {
+
         await axios.patch(
             `https://groups.roblox.com/v1/groups/${GROUP_ID}/users/${userId}`,
             {
-                roleId: TARGET_RANK_ID
+                roleId: TARGET_ROLE_ID
             },
             {
                 headers: {
@@ -50,50 +68,78 @@ async function setRank(userId) {
             }
         );
 
-        console.log(`Ranked ${userId}`);
+
+        console.log(`✅ Ranked ${username} (${userId})`);
 
     } catch (error) {
-        console.log(`Failed ranking ${userId}:`);
+
+        console.log(`❌ Failed ranking ${username}:`);
         console.log(error.response?.data || error.message);
+
     }
 }
 
 
-// Check for new members
+// Scan group members
 async function checkMembers() {
 
-    console.log("Checking new members...");
+    console.log("🔎 Checking for new members...");
 
     let cursor = "";
+
 
     while (true) {
 
         const data = await getMembers(cursor);
 
-        if (!data) break;
+
+        if (!data)
+            break;
 
 
         for (const user of data.data) {
 
-            console.log(`New member found: ${user.username}`);
 
-            await setRank(user.userId);
+            // Skip already checked users
+            if (processedUsers.has(user.userId))
+                continue;
 
-            // avoid API spam
-            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            processedUsers.add(user.userId);
+
+
+            await setRank(
+                user.userId,
+                user.username
+            );
+
+
+            // Prevent API spam
+            await new Promise(resolve =>
+                setTimeout(resolve, 1500)
+            );
+
         }
 
 
-        if (!data.nextPageCursor) break;
+        if (!data.nextPageCursor)
+            break;
+
 
         cursor = data.nextPageCursor;
+
     }
+
+
+    console.log("✅ Member check complete.");
+
 }
 
 
-// Run every 5 minutes
-setInterval(checkMembers, 5 * 60 * 1000);
 
-
-// Run once on startup
+// Check once when bot starts
 checkMembers();
+
+
+// Check every 30 seconds
+setInterval(checkMembers, 30 * 1000);
