@@ -23,7 +23,7 @@ function parseAxiosError(error) {
     return error.message;
 }
 
-// Get Member role ID via Open Cloud
+// Get Member role ID via Open Cloud (Finds the lowest valid group rank)
 async function getMemberRoleId() {
     try {
         const response = await axios.get(
@@ -35,15 +35,21 @@ async function getMemberRoleId() {
             }
         );
 
-        // Open Cloud returns roles in the .data array (or response.data.groupRoles)
         const roles = response.data.groupRoles || response.data.data || [];
-        const memberRole = roles.find(role => role.rank === 1);
+        
+        // Filter out Rank 0 (Guests who aren't in the group)
+        const validGroupRoles = roles.filter(role => role.rank > 0);
 
-        if (!memberRole) {
-            throw new Error("Member role (rank 1) not found in group roles");
+        if (validGroupRoles.length === 0) {
+            throw new Error("No valid group roles found");
         }
 
-        // Open Cloud role ID extraction (format is usually "groups/groupId/roles/roleId")
+        // Sort by rank ascending to find the lowest tier role automatically
+        validGroupRoles.sort((a, b) => a.rank - b.rank);
+        const memberRole = validGroupRoles[0];
+
+        console.log(`ℹ️ Automatically identified your entry member role: "${memberRole.displayName}" (Rank ${memberRole.rank})`);
+
         const roleIdPath = memberRole.path || memberRole.name;
         const roleId = roleIdPath.split("/").pop();
         return Number(roleId);
@@ -92,11 +98,7 @@ async function getUserMembershipAndRank(targetUserId) {
         if (memberships.length === 0) return null;
         
         const membership = memberships[0];
-        
-        // Extract membership ID from path ("groups/{groupId}/memberships/{membershipId}")
         const membershipId = membership.path.split("/").pop();
-        
-        // Extract role ID ("groups/{groupId}/roles/{roleId}")
         const roleId = membership.role.split("/").pop();
         
         return {
@@ -112,8 +114,6 @@ async function getUserMembershipAndRank(targetUserId) {
 // Rank user via Open Cloud
 async function setRank(membershipId, username) {
     try {
-        // Open Cloud updates membership roles using PATCH on the membership resource
-        // No X-CSRF token handling is needed when using valid API Keys on apis.roblox.com
         await axios.patch(
             `https://apis.roblox.com/cloud/v2/groups/${GROUP_ID}/memberships/${membershipId}`,
             {
@@ -137,7 +137,14 @@ async function setRank(membershipId, username) {
 async function checkMembers() {
     let pageToken = "";
     let currentMembers = [];
-    const memberRoleId = await getMemberRoleId();
+    let memberRoleId;
+
+    try {
+        memberRoleId = await getMemberRoleId();
+    } catch (err) {
+        console.error("❌ " + err.message);
+        return;
+    }
 
     try {
         while (true) {
@@ -145,10 +152,8 @@ async function checkMembers() {
             const memberships = data.groupMemberships || [];
             
             for (const membership of memberships) {
-                // Extract role ID
                 const roleId = Number(membership.role.split("/").pop());
                 
-                // Only process them if they are currently assigned to the 'Member' role ID
                 if (roleId === memberRoleId) {
                     const userId = membership.user.split("/").pop();
                     currentMembers.push({
@@ -169,7 +174,6 @@ async function checkMembers() {
     let usersRankedCount = 0;
 
     for (const member of currentMembers) {
-        // Double check their profile just to ensure they still only have the default role
         const status = await getUserMembershipAndRank(member.userId);
 
         if (status && status.roleId === memberRoleId) {
